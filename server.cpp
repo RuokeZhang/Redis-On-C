@@ -101,99 +101,6 @@ static void fd_set_nb(int fd)
         return;
     }
 }
-
-// pipeline. There may be more than one request in the read buffer
-// This function takes one request from the read buffer, generates a response, then transits to the STATE_RES state.
-static bool try_one_request(Conn *conn)
-{
-    // if not enough data
-    if (conn->rbuf_size < 4)
-    {
-        return false;
-    }
-    // get buffer's length
-    u_int32_t len;
-    memcpy(&len, &conn->rbuf[0], 4);
-    // if too long
-    if (len > k_max_msg)
-    {
-        msg("message too long.");
-        conn->state = STATE_END;
-        return false;
-    }
-    // got one request, do something with it
-    printf("client says: %.*s\n", len, &conn->rbuf[4]);
-
-    // generate echoing response
-    memcpy(&conn->wbuf[0], &len, 4);
-    memcpy(&conn->wbuf[4], &conn->rbuf[4], len);
-    conn->wbuf_size = len + 4;
-
-    // remove this request from the read buffer
-    size_t remain_bytes = conn->rbuf_size - len - 4;
-    if (remain_bytes > 0)
-    {
-        memmove(conn->rbuf, &conn->rbuf[len + 4], len + 4);
-    }
-    conn->rbuf_size = remain_bytes;
-
-    // change state
-    conn->state = STATE_RES;
-}
-
-static bool try_fill_buffer(Conn *conn)
-{
-    assert(conn->rbuf_size < sizeof(conn->rbuf));
-    // number of bytes received
-    ssize_t rv = 0;
-    do
-    {
-        size_t cap = sizeof(conn->rbuf) - conn->rbuf_size;
-        rv = recv(conn->fd, conn->rbuf, cap, 0);
-    } while (rv < 0 && errno == EINTR); // The receive was interrupted by delivery of a signal before any data was available
-
-    // in non-blocking mode, if there's nothing to read, the value -1 is returned and errno is set to EAGAIN
-    if (rv < 0 && errno == EAGAIN)
-    {
-        return false;
-    }
-
-    // if other error
-    if (rv < 0)
-    {
-        msg("read() error");
-        conn->state = STATE_END;
-        return false;
-    }
-
-    // EOF met. When a stream socket peer has performed an orderly shutdown
-    if (rv == 0)
-    {
-        msg("EOF");
-    }
-    conn->state = STATE_END;
-    conn->rbuf_size += rv;
-
-    while (try_one_request(conn))
-    {
-    }
-    return false;
-}
-
-static void state_req(Conn *conn)
-{
-    while (try_fill_buffer(conn))
-    {
-    }
-}
-
-static void state_res(Conn *conn)
-{
-    while (try_flush_buffer(conn))
-    {
-    }
-}
-
 // flush the write buffer, and set state to REQ
 static bool try_flush_buffer(Conn *conn)
 {
@@ -210,7 +117,6 @@ static bool try_flush_buffer(Conn *conn)
     {
         return false;
     }
-
     // if send error
     if (rv < 0)
     {
@@ -233,6 +139,102 @@ static bool try_flush_buffer(Conn *conn)
     return true;
 }
 
+static void state_res(Conn *conn)
+{
+    while (try_flush_buffer(conn))
+    {
+    }
+}
+// pipeline. There may be more than one request in the read buffer
+// This function takes one request from the read buffer, generates a response, then transits to the STATE_RES state.
+static bool try_one_request(Conn *conn)
+{
+    // if not enough data
+    if (conn->rbuf_size < 4)
+    {
+        return false;
+    }
+    // get the first request's length
+    u_int32_t len;
+    memcpy(&len, &conn->rbuf[0], 4);
+    // if too long
+    if (len > k_max_msg)
+    {
+        msg("message too long.");
+        conn->state = STATE_END;
+        return false;
+    }
+    // got one request, do something with it
+    printf("client says: %.*s\n", len, &conn->rbuf[4]);
+
+    // generate echoing response
+    memcpy(&conn->wbuf[0], &len, 4);
+    memcpy(&conn->wbuf[4], &conn->rbuf[4], len);
+    conn->wbuf_size = len + 4;
+
+    // remove this request from the read buffer
+    size_t remain_bytes = conn->rbuf_size - len - 4;
+    if (remain_bytes > 0)
+    {
+        memmove(conn->rbuf, &conn->rbuf[len + 4], remain_bytes);
+    }
+    conn->rbuf_size = remain_bytes;
+
+    // change state
+    conn->state = STATE_RES;
+    state_res(conn);
+
+    // continue the outer loop if the request was fully processed
+    return (conn->state == STATE_REQ);
+}
+
+static bool try_fill_buffer(Conn *conn)
+{
+    assert(conn->rbuf_size < sizeof(conn->rbuf));
+    // number of bytes received
+    ssize_t rv = 0;
+    do
+    {
+        // sizeof is a compile-time operator, it will return the size of the total array, i.e. the max array size
+        size_t cap = sizeof(conn->rbuf) - conn->rbuf_size;
+        rv = recv(conn->fd, &conn->rbuf[conn->rbuf_size], cap, 0);
+    } while (rv < 0 && errno == EINTR); // The receive was interrupted by delivery of a signal before any data was available
+
+    // in non-blocking mode, if there's nothing to read, the value -1 is returned and errno is set to EAGAIN
+    if (rv < 0 && errno == EAGAIN)
+    {
+        return false;
+    }
+
+    // if other error
+    if (rv < 0)
+    {
+        msg("read() error");
+        conn->state = STATE_END;
+        return false;
+    }
+
+    // EOF met. When a stream socket peer has performed an orderly shutdown
+    if (rv == 0)
+    {
+        msg("EOF");
+        conn->state = STATE_END;
+    }
+    conn->rbuf_size += rv;
+
+    while (try_one_request(conn))
+    {
+    }
+    return false;
+}
+
+static void state_req(Conn *conn)
+{
+    while (try_fill_buffer(conn))
+    {
+    }
+}
+
 static void connection_io(Conn *conn)
 {
     if (conn->state == STATE_REQ)
@@ -249,8 +251,18 @@ static void connection_io(Conn *conn)
     }
 }
 
+static void conn_put(std::vector<Conn *> &fd2conn, struct Conn *conn)
+{
+    // if fd2conn's size isn't enough, resize it
+    if (fd2conn.size() <= (size_t)conn->fd)
+    {
+        fd2conn.resize(conn->fd + 1);
+    }
+    fd2conn[conn->fd] = conn;
+}
+
 // listening fd try to accept new client connections, then put those connections in fd2conn array
-static int32_t accept_new_conn(std::vector<Conn *> &fd2conn, int fd)
+static void accept_new_conn(std::vector<Conn *> &fd2conn, int fd)
 {
     socklen_t sin_size;
     struct sockaddr_storage their_addr;
@@ -272,15 +284,6 @@ static int32_t accept_new_conn(std::vector<Conn *> &fd2conn, int fd)
     conn->wbuf_size = 0;
     // add this connection to fd2conn
     conn_put(fd2conn, conn);
-}
-static void conn_put(std::vector<Conn *> &fd2conn, struct Conn *conn)
-{
-    // if fd2conn's size isn't enough, resize it
-    if (fd2conn.size() <= (size_t)conn->fd)
-    {
-        fd2conn.resize(conn->fd + 1);
-    }
-    fd2conn[conn->fd] = conn;
 }
 
 int main(void)
@@ -355,6 +358,7 @@ int main(void)
     // set the listen fd to nonblocking mode
     fd_set_nb(sockfd);
 
+    // TODO: implement epoll.
     std::vector<struct pollfd> poll_args;
     while (1)
     {
