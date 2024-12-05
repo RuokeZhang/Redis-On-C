@@ -17,6 +17,7 @@
 #include <sys/wait.h>
 #include <signal.h>
 #include <vector>
+#include <map>
 
 #define PORT "3490" // the port users will be connecting to
 
@@ -24,7 +25,7 @@
 
 static void msg(const char *msg)
 {
-    fprintf(stderr, "%s\n", msg);
+    perror(msg);
 }
 
 enum
@@ -33,6 +34,16 @@ enum
     STATE_RES = 1, // sending responses
     STATE_END = 2, // mark the connection for deletion
 };
+
+enum
+{
+    RES_OK = 0,
+    RES_ERR = 1,
+    RES_NX = 2,
+};
+
+// the data structure for the key space
+static std::map<std::string, std::string> g_map;
 
 const size_t k_max_msg = 4096;
 
@@ -145,6 +156,109 @@ static void state_res(Conn *conn)
     {
     }
 }
+
+static bool cmd_is(const std::string &word, const char *cmd)
+{
+    return 0 == strcasecmp(word.c_str(), cmd);
+}
+
+const size_t k_max_args = 1024;
+
+static int32_t parse_req(const uint8_t *data, size_t len, std::vector<std::string> &out)
+{
+    // store the number of parameters in n
+    uint32_t n = 0;
+    memcpy(&n, &data[0], 4);
+
+    if (n > k_max_args)
+    {
+        return -1;
+    }
+    // record current parsing position
+    size_t pos = 4;
+
+    // parse parameters in a loop
+    while (n--)
+    {
+        if (pos + 4 > len)
+        {
+            return -1;
+        }
+        // get current parameter's length
+        uint32_t sz = 0;
+        memcpy(&sz, &data[pos], 4);
+        if (pos + sz > len)
+        {
+            return -1;
+        }
+        // convert the parameter from chars to a string, then store it in cmd
+        out.push_back(std::string((char *)&data[pos + 4], sz));
+        pos += 4 + sz;
+    }
+    if (pos != len)
+    {
+        return -1;
+    }
+    return 0;
+}
+
+static uint32_t do_get(const std::vector<std::string> &cmd, uint8_t *res, uint32_t *reslen)
+{
+    // if we don't have that key
+    if (!g_map.count(cmd[1]))
+    {
+        return RES_NX;
+    }
+    std::string &val = g_map[cmd[1]];
+    memcpy(res, val.data(), val.size());
+    *reslen = (uint32_t)val.size();
+    return RES_OK;
+}
+
+static uint32_t do_set(const std::vector<std::string> &cmd, uint8_t *res, uint32_t *reslen)
+{
+    g_map[cmd[1]] = cmd[2];
+    return RES_OK;
+}
+
+static uint32_t do_del(const std::vector<std::string> &cmd, uint8_t *res, uint32_t *reslen)
+{
+    g_map.erase(cmd[1]);
+    return RES_OK;
+}
+
+static int32_t do_request(const uint8_t *req, uint32_t reqlen, uint32_t *rescode, uint8_t *res, uint32_t *reslen)
+{
+    std::vector<std::string> cmd;
+    // parse the request, store commands in cmd
+    int rv = parse_req(req, reqlen, cmd);
+    if (rv != 0)
+    {
+        msg("bad request");
+        return (-1);
+    }
+    if (cmd.size() == 2 && cmd_is(cmd[0], "get"))
+    {
+        *rescode = do_get(cmd, res, reslen);
+    }
+    else if (cmd.size() == 3 && cmd_is(cmd[0], "set"))
+    {
+        *rescode = do_set(cmd, res, reslen);
+    }
+    else if (cmd.size() == 2 && cmd_is(cmd[0], "del"))
+    {
+        *rescode = do_del(cmd, res, reslen);
+    }
+    else
+    {
+        *rescode = RES_ERR;
+        const char *msg = "unknown cmd";
+        strcpy((char *)res, msg);
+        *reslen = strlen(msg);
+        return 0;
+    }
+    return 0;
+}
 // pipeline. There may be more than one request in the read buffer
 // This function takes one request from the read buffer, generates a response, then transits to the STATE_RES state.
 static bool try_one_request(Conn *conn)
@@ -164,13 +278,22 @@ static bool try_one_request(Conn *conn)
         conn->state = STATE_END;
         return false;
     }
-    // got one request, do something with it
-    printf("client says: %.*s\n", len, &conn->rbuf[4]);
-
-    // generate echoing response
-    memcpy(&conn->wbuf[0], &len, 4);
-    memcpy(&conn->wbuf[4], &conn->rbuf[4], len);
-    conn->wbuf_size = len + 4;
+    // got one request, generate the reponse
+    uint32_t rescode = 0;
+    uint32_t wlen = 0;
+    // parse the first request in the read buffer, and generate corresponding respond, store them in the write buffer
+    int32_t err = do_request(&conn->rbuf[4], len, &rescode, &conn->wbuf[4 + 4], &wlen);
+    if (err)
+    {
+        conn->state = STATE_END;
+        return false;
+    }
+    // whatever the result is, we will return a res code. So the first thing in the write buff is the length of response.
+    wlen += 4;
+    // put the result's length and result code in the write buffer, right before the actual result content
+    memcpy(&conn->wbuf[0], &wlen, 4);
+    memcpy(&conn->wbuf[4], &rescode, 4);
+    conn->wbuf_size = wlen + 4 + 4;
 
     // remove this request from the read buffer
     size_t remain_bytes = conn->rbuf_size - len - 4;
@@ -318,7 +441,7 @@ int main(void)
             perror("server: socket");
             continue;
         }
-
+        // allow the socket to bind in the same IP and port again, even if the prior socket is in TIME_WAIT status
         if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes,
                        sizeof(int)) == -1)
         {
@@ -410,6 +533,6 @@ int main(void)
             (void)accept_new_conn(fd2conn, sockfd);
         }
     }
-
+    close(sockfd);
     return 0;
 }

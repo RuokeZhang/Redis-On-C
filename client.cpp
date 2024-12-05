@@ -7,7 +7,7 @@
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
-
+#include <vector>
 #include <arpa/inet.h>
 
 #define PORT "3490"
@@ -40,20 +40,37 @@ static int32_t write_all(int fd, char *buf, size_t n)
     return 0;
 }
 
-static int32_t send_req(int fd, const char *text)
+// send a command, like "set key val".  In this function we just put the command in the wbuf.
+// this command will be in this form: "{whole length} 3 3 len 3 len 3 len", when stored in the wbuf
+static int32_t send_req(int fd, const std::vector<std::string> &cmd)
 {
-    // get msg's len
-    uint32_t len = (uint32_t)strlen(text);
+    // get msg's whole len
+    uint32_t len = 4;
+    for (const std::string &s : cmd)
+    {
+        len += 4 + s.size();
+    }
     if (len > k_max_msg)
     {
         return -1;
     }
-    // fill out wbuf. the length takes up 4 bytes.
+
+    // fill the whole length in wbuf, except for itself
     char wbuf[4 + k_max_msg];
     memcpy(wbuf, &len, 4);
-    memcpy(&wbuf[4], text, len);
-    // send to the sockfd
-    return write_all(sockfd, wbuf, len + 4);
+    // fill the number of paras
+    uint32_t n = cmd.size();
+    memcpy(&wbuf[4], &n, 4);
+    // fill in the paras and their sizes
+    size_t margin = 8;
+    for (const std::string &s : cmd)
+    {
+        uint32_t p = (uint32_t)s.size();
+        memcpy(&wbuf[margin], &p, 4);
+        memcpy(&wbuf[margin + 4], s.data(), s.size());
+        margin += 4 + s.size();
+    }
+    return write_all(fd, wbuf, 4 + len);
 }
 
 // aim to read n bytes, if it fails once, try again until read full
@@ -127,13 +144,20 @@ static int32_t read_res(int fd)
         return err;
     }
 
-    // print the msg
-    rbuf[4 + len] = '\0';
-    printf("server says: %s\n", &rbuf[4]);
+    // print the result
+    if (len < 4)
+    {
+        msg("bad response");
+        return -1;
+    }
+    // get the rescode
+    uint32_t rescode = 0;
+    memcpy(&rescode, &rbuf[4], 4);
+    printf("server says: [%u] %.*s\n", rescode, len - 4, &rbuf[8]);
     return 0;
 }
 
-int main()
+int main(int argc, char **argv)
 {
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;
@@ -170,28 +194,22 @@ int main()
         fprintf(stderr, "client: failed to connect\n");
         return 2;
     }
-
-    // Prepare a list of queries to send, loop to send each query using send_req
-    const char *quries[3] = {"hello", "ruoke", "zhang"};
-    for (size_t i = 0; i < 3; ++i)
+    // store those commands in a vector
+    std::vector<std::string> cmd;
+    for (int i = 1; i < argc; ++i)
     {
-        int32_t r = send_req(sockfd, quries[i]);
-        if (r < 0)
-        {
-            msg("send message error");
-            close(sockfd);
-            return 0;
-        }
+        cmd.push_back(argv[i]);
     }
-    // loop to read reponses
-    for (size_t i = 0; i < 3; i++)
+    int32_t err = send_req(sockfd, cmd);
+    if (err)
     {
-        int32_t r = read_res(sockfd);
-        if (r)
-        {
-            msg("read message error");
-            close(sockfd);
-            return 0;
-        }
+        return 1;
     }
+    err = read_res(sockfd);
+    if (err)
+    {
+        return 1;
+    }
+    close(sockfd);
+    return 0;
 }
