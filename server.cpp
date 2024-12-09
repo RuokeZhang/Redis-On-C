@@ -18,6 +18,7 @@
 #include <signal.h>
 #include <vector>
 #include <map>
+#include "hashtable.h"
 
 #define PORT "3490" // the port users will be connecting to
 

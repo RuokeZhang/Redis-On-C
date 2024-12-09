@@ -1,27 +1,13 @@
 #include <assert.h>
 #include <stdlib.h>
 #include "hashtable.h"
-
 /*
 using intrusive data structure
 */
 
-// a hashtable node
-struct HNode
-{
-    HNode *next = NULL;
-    uint64_t hcode = 0;
-} struct HTab
-{
-    HNode **tab = NULL;
-    size_t mask = 0; // 2^n-1
-    size_t size = 0;
-}
-
 const size_t k_resizing_work = 128;
 
-static void
-h_init(Htab *htab, size_t n)
+static void h_init(HTab *htab, size_t n)
 {
     assert(n > 0 && (n & (n - 1)) == 0); // Check if n is a power of 2
     htab->tab = (HNode **)calloc(sizeof(HNode *), n);
@@ -30,7 +16,7 @@ h_init(Htab *htab, size_t n)
 }
 
 // hashtable insertion
-static void h_insert(Htab *htab, HNode *node)
+static void h_insert(HTab *htab, HNode *node)
 {
     // get the node's position(hash index)
     size_t pos = node->hcode & htab->mask;
@@ -75,34 +61,7 @@ static HNode *h_detach(HTab *htab, HNode **from)
     return node;
 }
 
-struct HMap
-{
-    HTab ht1;
-    HTab ht2;
-    size_t resizing_pos = 0;
-}
-
 const size_t k_max_load_factor = 8;
-
-void hm_insert(HMap *hamp, HNode *node)
-{
-    if (!hmap->ht1.tab)
-    {
-        h_init(&hmao->ht1, 4);
-    }
-    h_insert(&hmap->ht1, node);
-    // check the load factor
-    if (!hmap->ht2.tab)
-    {
-        size_t load_factor = hmap->ht1.size / (hmap->ht1.mask + 1);
-        if (load_factor > k_max_load_factor)
-        {
-            hm_start_resizing(hmap);
-        }
-    }
-    // move keys to the newer table
-    hm_help_resizing(hmap);
-}
 
 static void hm_start_resizing(HMap *hmap)
 {
@@ -128,15 +87,35 @@ static void hm_help_resizing(HMap *hmap)
         }
         // insert that node into ht1, remove the first node in that position in ht2
         HNode *toInserted = h_detach(&hmap->ht2, from);
-        h_insert(&hmap->ht1, toInsterted);
+        h_insert(&hmap->ht1, toInserted);
         nwork++;
     }
     if (hmap->ht2.size == 0 && hmap->ht2.tab)
     {
         // done
         free(hmap->ht2.tab);
-        hmap->ht2 = HTab{};
+        hmap->ht2 = HTab();
     }
+}
+
+void hm_insert(HMap *hmap, HNode *node)
+{
+    if (!hmap->ht1.tab)
+    {
+        h_init(&hmap->ht1, 4);
+    }
+    h_insert(&hmap->ht1, node);
+    // check the load factor
+    if (!hmap->ht2.tab)
+    {
+        size_t load_factor = hmap->ht1.size / (hmap->ht1.mask + 1);
+        if (load_factor > k_max_load_factor)
+        {
+            hm_start_resizing(hmap);
+        }
+    }
+    // move keys to the newer table
+    hm_help_resizing(hmap);
 }
 
 // search for the key in both hashtables.
@@ -162,7 +141,7 @@ HNode *hm_pop(HMap *hmap, HNode *key, bool (*eq)(HNode *, HNode *))
         return h_detach(&hmap->ht1, node);
     }
     // search for that key in ht1
-    HNode **node = h_lookup(&hmap->ht2, key, eq);
+    node = h_lookup(&hmap->ht2, key, eq);
     if (node)
     {
         return h_detach(&hmap->ht2, node);
@@ -179,5 +158,5 @@ void hm_destroy(HMap *hmap)
 {
     free(hmap->ht1.tab);
     free(hmap->ht2.tab);
-    *hmap = HMap{};
+    *hmap = HMap();
 }
