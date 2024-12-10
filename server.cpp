@@ -24,6 +24,24 @@
 
 #define BACKLOG 10 // how many pending connections queue will hold
 
+template <class P, class M>
+size_t my_offsetof(const M P::*member)
+{
+    return (size_t) & (reinterpret_cast<P *>(0)->*member);
+}
+
+template <class P, class M>
+P *my_container_of_impl(M *ptr, const M P::*member)
+{
+    return (P *)((char *)ptr - my_offsetof(member));
+}
+
+#define my_container_of(ptr, type, member) \
+    my_container_of_impl(ptr, &type::member)
+
+#include <type_traits>
+#define my_typeof(___zarg) std::remove_reference<decltype(___zarg)>::type
+
 static void msg(const char *msg)
 {
     perror(msg);
@@ -43,8 +61,37 @@ enum
     RES_NX = 2,
 };
 
+static struct
+{
+    HMap db;
+} g_data;
+
 // the data structure for the key space
 static std::map<std::string, std::string> g_map;
+
+struct Entry
+{
+    struct HNode node;
+    std::string key;
+    std::string val;
+};
+
+static bool entry_eq(HNode *lhs, HNode *rhs)
+{
+    struct Entry *le = my_container_of(lhs, Entry, node);
+    struct Entry *re = my_container_of(rhs, Entry, node);
+    return le->key == re->key;
+}
+
+static uint64_t str_hash(const uint8_t *data, size_t len)
+{
+    uint32_t h = 0x811C9DC5;
+    for (size_t i = 0; i < len; i++)
+    {
+        h = (h + data[i]) * 0x01000193;
+    }
+    return h;
+}
 
 const size_t k_max_msg = 4096;
 
@@ -66,17 +113,6 @@ static void die(const char *msg)
     int err = errno;
     fprintf(stderr, "[%d] %s\n", err, msg);
     abort();
-}
-
-void sigchld_handler(int s)
-{
-    // waitpid() might overwrite errno, so we save and restore it:
-    int saved_errno = errno;
-
-    while (waitpid(-1, NULL, WNOHANG) > 0)
-        ;
-
-    errno = saved_errno;
 }
 
 // get sockaddr, IPv4 or IPv6:
@@ -203,28 +239,65 @@ static int32_t parse_req(const uint8_t *data, size_t len, std::vector<std::strin
     return 0;
 }
 
+// HNode *hm_lookup(HMap *hmap, HNode *key, bool (*eq)(HNode *, HNode *))
 static uint32_t do_get(const std::vector<std::string> &cmd, uint8_t *res, uint32_t *reslen)
 {
-    // if we don't have that key
-    if (!g_map.count(cmd[1]))
+    Entry entry;
+    entry.key = std::move(cmd[1]);
+    entry.node.hcode = str_hash((uint8_t *)entry.key.data(), entry.key.size());
+    // search for the node in the hashmap
+    HNode *node = hm_lookup(&g_data.db, &entry.node, &entry_eq);
+    if (!node)
     {
         return RES_NX;
     }
-    std::string &val = g_map[cmd[1]];
+
+    // if this node exists, we return its value
+    const std::string &val = my_container_of(node, Entry, node)->val;
+    assert(val.size() <= k_max_msg);
     memcpy(res, val.data(), val.size());
     *reslen = (uint32_t)val.size();
     return RES_OK;
 }
 
-static uint32_t do_set(const std::vector<std::string> &cmd, uint8_t *res, uint32_t *reslen)
+static uint32_t do_set(std::vector<std::string> &cmd, uint8_t *res, uint32_t *reslen)
 {
-    g_map[cmd[1]] = cmd[2];
+    Entry entry;
+    entry.key = std::move(cmd[1]);
+    entry.val = std::move(cmd[2]);
+    entry.node.hcode = str_hash((uint8_t *)entry.key.data(), entry.key.size());
+
+    // search for the node in the hashmap
+    HNode *node = hm_lookup(&g_data.db, &entry.node, &entry_eq);
+    // if not exist
+    if (!node)
+    {
+        // entry here is just a local variable. If we insert entry, then it will cause dangling pointer.
+        //  Bc h_insert just save a pointer to the HNode, not the data itself
+        // so we use new to create a variable in the heap
+        Entry *new_entry = new Entry(entry);
+        hm_insert(&g_data.db, &new_entry->node);
+    }
+    // if the key exists, replace its value
+    else
+    {
+        Entry *existing_entry = my_container_of(node, Entry, node);
+        existing_entry->val = std::move(cmd[2]);
+    }
+
     return RES_OK;
 }
 
 static uint32_t do_del(const std::vector<std::string> &cmd, uint8_t *res, uint32_t *reslen)
 {
-    g_map.erase(cmd[1]);
+    Entry entry;
+    entry.key = std::move(cmd[1]);
+    entry.node.hcode = str_hash((uint8_t *)entry.key.data(), entry.key.size());
+    HNode *node = hm_pop(&g_data.db, &entry.node, &entry_eq);
+    if (node)
+    {
+        delete my_container_of(node, Entry, node);
+    }
     return RES_OK;
 }
 
