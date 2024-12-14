@@ -11,9 +11,9 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <arpa/inet.h>
 #include <fcntl.h>
 #include <netdb.h>
-#include <arpa/inet.h>
 #include <sys/wait.h>
 #include <signal.h>
 #include <vector>
@@ -56,9 +56,17 @@ enum
 
 enum
 {
-    RES_OK = 0,
-    RES_ERR = 1,
-    RES_NX = 2,
+    SER_NIL = 0,
+    SER_ERR = 1,
+    SER_STR = 2,
+    SER_INT = 3,
+    SER_ARR = 4,
+};
+
+enum
+{
+    ERR_UNKNOWN = 1,
+    ERR_2BIG = 2,
 };
 
 static struct
@@ -66,8 +74,41 @@ static struct
     HMap db;
 } g_data;
 
-// the data structure for the key space
-static std::map<std::string, std::string> g_map;
+static void out_nil(std::string &out)
+{
+    // represent the serialized data is a nil
+    out.push_back(SER_NIL);
+}
+
+static void out_str(std::string &out, const std::string &val)
+{
+    out.push_back(SER_STR);
+    uint32_t len = (uint32_t)val.size();
+    out.append((char *)&len, 4);
+    out.append(val);
+}
+
+// TODO: unsafe implementation
+static void out_int(std::string &out, int64_t val)
+{
+    out.push_back(SER_INT);
+    out.append((char *)&val, 8);
+}
+
+static void out_err(std::string &out, int32_t code, const std::string &msg)
+{
+    out.push_back(SER_ERR);
+    out.append((char *)&code, 4);
+    uint32_t len = (uint32_t)msg.size();
+    out.append((char *)&len, 4);
+    out.append(msg);
+}
+
+static void out_arr(std::string &out, uint32_t n)
+{
+    out.push_back(SER_ARR);
+    out.append((char *)&n, 4);
+}
 
 struct Entry
 {
@@ -240,7 +281,7 @@ static int32_t parse_req(const uint8_t *data, size_t len, std::vector<std::strin
 }
 
 // HNode *hm_lookup(HMap *hmap, HNode *key, bool (*eq)(HNode *, HNode *))
-static uint32_t do_get(const std::vector<std::string> &cmd, uint8_t *res, uint32_t *reslen)
+static void do_get(const std::vector<std::string> &cmd, std::string &out)
 {
     Entry entry;
     entry.key = std::move(cmd[1]);
@@ -249,18 +290,16 @@ static uint32_t do_get(const std::vector<std::string> &cmd, uint8_t *res, uint32
     HNode *node = hm_lookup(&g_data.db, &entry.node, &entry_eq);
     if (!node)
     {
-        return RES_NX;
+        return out_nil(out);
     }
 
     // if this node exists, we return its value
     const std::string &val = my_container_of(node, Entry, node)->val;
-    assert(val.size() <= k_max_msg);
-    memcpy(res, val.data(), val.size());
-    *reslen = (uint32_t)val.size();
-    return RES_OK;
+
+    out_str(out, val);
 }
 
-static uint32_t do_set(std::vector<std::string> &cmd, uint8_t *res, uint32_t *reslen)
+static void do_set(std::vector<std::string> &cmd, std::string &out)
 {
     Entry entry;
     entry.key = std::move(cmd[1]);
@@ -284,11 +323,10 @@ static uint32_t do_set(std::vector<std::string> &cmd, uint8_t *res, uint32_t *re
         Entry *existing_entry = my_container_of(node, Entry, node);
         existing_entry->val = std::move(cmd[2]);
     }
-
-    return RES_OK;
+    return out_nil(out);
 }
 
-static uint32_t do_del(const std::vector<std::string> &cmd, uint8_t *res, uint32_t *reslen)
+static void do_del(const std::vector<std::string> &cmd, std::string &out)
 {
     Entry entry;
     entry.key = std::move(cmd[1]);
@@ -298,40 +336,84 @@ static uint32_t do_del(const std::vector<std::string> &cmd, uint8_t *res, uint32
     {
         delete my_container_of(node, Entry, node);
     }
-    return RES_OK;
+    return out_int(out, node ? 1 : 0);
 }
 
-static int32_t do_request(const uint8_t *req, uint32_t reqlen, uint32_t *rescode, uint8_t *res, uint32_t *reslen)
+/**
+ * @brief Iterates through all buckets and nodes in the given hash table and applies
+ *        a callback function to each node.
+ *
+ * @param tab Pointer to the hash table (HTab *) to be scanned.
+ * @param f Callback function to be called for each node. The callback takes
+ *          two arguments: the node (HNode *) and a user-provided argument (void *).
+ * @param arg A user-provided argument passed to the callback function for custom use.
+ */
+static void h_scan(HTab *tab, void (*f)(HNode *, void *), void *arg)
 {
-    std::vector<std::string> cmd;
-    // parse the request, store commands in cmd
-    int rv = parse_req(req, reqlen, cmd);
-    if (rv != 0)
+    if (tab->size == 0)
     {
-        msg("bad request");
-        return (-1);
+        return;
     }
-    if (cmd.size() == 2 && cmd_is(cmd[0], "get"))
+    for (size_t i = 0; i < tab->mask + 1; ++i)
     {
-        *rescode = do_get(cmd, res, reslen);
+        HNode *node = tab->tab[i];
+        while (node)
+        {
+            f(node, arg);
+            node = node->next;
+        }
+    }
+}
+
+/**
+ * @brief Callback function used during hash table scanning to extract and process
+ *        keys from hash table nodes. It appends the key from each node to the provided string.
+ *
+ * @param node Pointer to the current hash table node (HNode *) being processed.
+ * @param arg A pointer to a `std::string` (passed as void *) where the keys will be appended.
+ */
+static void cb_scan(HNode *node, void *arg)
+{
+    std::string &out = *(std::string *)arg;
+    out_str(out, my_container_of(node, Entry, node)->key);
+}
+
+/**
+ * @brief Gathers all keys from the global database's hash tables and appends them
+ *        to the provided output string as an array.
+ *
+ * @param cmd Unused vector of strings, typically representing input commands.
+ * @param out Reference to a `std::string` where the array of keys will be written.
+ */
+static void do_keys(std::vector<std::string> cmd, std::string &out)
+{
+    out_arr(out, (uint32_t)hm_size(&g_data.db));
+    h_scan(&g_data.db.ht1, &cb_scan, &out);
+    h_scan(&g_data.db.ht2, &cb_scan, &out);
+}
+
+static void do_request(std::vector<std::string> &cmd, std::string &out)
+{
+    if (cmd.size() == 1 && cmd_is(cmd[0], "keys"))
+    {
+        do_keys(cmd, out);
+    }
+    else if (cmd.size() == 2 && cmd_is(cmd[0], "get"))
+    {
+        do_get(cmd, out);
     }
     else if (cmd.size() == 3 && cmd_is(cmd[0], "set"))
     {
-        *rescode = do_set(cmd, res, reslen);
+        do_set(cmd, out);
     }
     else if (cmd.size() == 2 && cmd_is(cmd[0], "del"))
     {
-        *rescode = do_del(cmd, res, reslen);
+        do_del(cmd, out);
     }
     else
     {
-        *rescode = RES_ERR;
-        const char *msg = "unknown cmd";
-        strcpy((char *)res, msg);
-        *reslen = strlen(msg);
-        return 0;
+        out_err(out, ERR_UNKNOWN, "Unknown cmd");
     }
-    return 0;
 }
 // pipeline. There may be more than one request in the read buffer
 // This function takes one request from the read buffer, generates a response, then transits to the STATE_RES state.
@@ -352,22 +434,28 @@ static bool try_one_request(Conn *conn)
         conn->state = STATE_END;
         return false;
     }
-    // got one request, generate the reponse
-    uint32_t rescode = 0;
-    uint32_t wlen = 0;
-    // parse the first request in the read buffer, and generate corresponding respond, store them in the write buffer
-    int32_t err = do_request(&conn->rbuf[4], len, &rescode, &conn->wbuf[4 + 4], &wlen);
-    if (err)
+    std::vector<std::string> cmd;
+    if (0 != parse_req(&conn->rbuf[4], len, cmd))
     {
+        msg("bad req");
         conn->state = STATE_END;
         return false;
     }
-    // whatever the result is, we will return a res code. So the first thing in the write buff is the length of response.
-    wlen += 4;
-    // put the result's length and result code in the write buffer, right before the actual result content
+
+    // got one request, generate the reponse
+    std::string out;
+    do_request(cmd, out);
+    if (4 + out.size() > k_max_msg)
+    {
+        out.clear();
+        out_err(out, ERR_2BIG, "response is too big");
+    }
+    uint32_t wlen = (uint32_t)out.size();
+    // the first thing in the write buff is the length of response(EXCEPT FOR ITSELF)
+    // put the result's length and result in the write buffer
     memcpy(&conn->wbuf[0], &wlen, 4);
-    memcpy(&conn->wbuf[4], &rescode, 4);
-    conn->wbuf_size = wlen + 4 + 4;
+    memcpy(&conn->wbuf[4], out.data(), out.size());
+    conn->wbuf_size = wlen + 4;
 
     // remove this request from the read buffer
     size_t remain_bytes = conn->rbuf_size - len - 4;
@@ -414,8 +502,16 @@ static bool try_fill_buffer(Conn *conn)
     // EOF met. When a stream socket peer has performed an orderly shutdown
     if (rv == 0)
     {
-        msg("EOF");
+        if (conn->rbuf_size > 0)
+        {
+            msg("unexpected EOF");
+        }
+        else
+        {
+            // normal EOF
+        }
         conn->state = STATE_END;
+        return false;
     }
     conn->rbuf_size += rv;
 

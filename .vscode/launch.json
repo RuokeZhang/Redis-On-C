@@ -1,7 +1,38 @@
 {
     "configurations": [
         {
-            "name": "C/C++: clang++ build and debug active file",
+            "name": "client get k",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${fileDirname}/${fileBasenameNoExtension}",
+            "args": [
+                "get",
+                "k"
+            ],
+            "stopAtEntry": false,
+            "cwd": "${fileDirname}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "lldb",
+            //"preLaunchTask": "C/C++: clang++ build active file"
+        },
+        {
+            "name": "client keys",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${fileDirname}/${fileBasenameNoExtension}",
+            "args": [
+                "keys"
+            ],
+            "stopAtEntry": false,
+            "cwd": "${fileDirname}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "lldb",
+            //"preLaunchTask": "C/C++: clang++ build active file"
+        },
+        {
+            "name": "clang++ default",
             "type": "cppdbg",
             "request": "launch",
             "program": "${fileDirname}/${fileBasenameNoExtension}",
@@ -11,7 +42,27 @@
             "environment": [],
             "externalConsole": false,
             "MIMode": "lldb",
-            "preLaunchTask": "C/C++: clang++ build active file"
+            //"preLaunchTask": "C/C++: clang++ build active file"
+        },
+        {
+            "name": "C++ Server Debug",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/server",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "lldb",
+            //"preLaunchTask": "link server",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ]
         }
     ],
     "version": "2.0.0"

@@ -40,6 +40,107 @@ static int32_t write_all(int fd, char *buf, size_t n)
     return 0;
 }
 
+enum
+{
+    SER_NIL = 0,
+    SER_ERR = 1,
+    SER_STR = 2,
+    SER_INT = 3,
+    SER_ARR = 4,
+};
+static int32_t on_response(const uint8_t *data, size_t size)
+{
+    if (size < 1)
+    {
+        msg("bad response from the server1");
+        return -1;
+    }
+    switch (data[0])
+    {
+    case SER_NIL:
+        printf("(nil)\n");
+        return 1;
+
+    case SER_ERR:
+        if (size < 1 + 8)
+        {
+            msg("bad response from the server2");
+            return -1;
+        }
+        {
+            int32_t code = 0;
+            uint32_t len = 0;
+            memcpy(&code, &data[1], 4);
+            memcpy(&len, &data[1 + 4], 4);
+            if (size < 1 + 8 + len)
+            {
+                msg("bad response a");
+                return -1;
+            }
+            printf("(err) %d %.*s\n", code, len, &data[1 + 8]);
+            return 1 + 8 + len;
+        }
+    case SER_STR:
+        if (size < 1 + 4)
+        {
+            msg("bad response from the server3");
+            return -1;
+        }
+        {
+            uint32_t len = 0;
+            memcpy(&len, &data[1], 4);
+            if (size < 1 + 4 + len)
+            {
+                msg("bad response b");
+                return -1;
+            }
+            printf("(str) %.*s\n", len, &data[1 + 4]);
+            return 1 + 4 + len;
+        }
+    case SER_INT:
+        if (size < 1 + 8)
+        {
+            msg("bad response from the server4");
+            return -1;
+        }
+        {
+            int64_t val = 0;
+            memcpy(&val, &data[1], 8);
+            printf("(int)%ld\n", val);
+            return 1 + 8;
+        }
+
+    case SER_ARR:
+        if (size < 1 + 4)
+        {
+            msg("bad response from the server5");
+            return -1;
+        }
+        {
+            uint32_t n = 0;
+            memcpy(&n, &data[1], 4);
+            printf("(arr)%d\n", n);
+            // parse every element in this array
+            size_t arr_bytes = 1 + 4;
+            for (uint32_t i = 0; i < n; i++)
+            {
+                // get number of bytes parsed
+                int32_t rv = on_response(&data[arr_bytes], size - arr_bytes);
+                if (rv < 0)
+                {
+                    return rv;
+                }
+                arr_bytes += (size_t)rv;
+            }
+            printf("(arr) end\n");
+            return (int32_t)arr_bytes;
+        }
+    default:
+        msg("bad response from the server: do not recognize ser code");
+        return -1;
+    }
+}
+
 // send a command, like "set key val".  In this function we just put the command in the wbuf.
 // this command will be in this form: "{whole length} 3 3 len 3 len 3 len", when stored in the wbuf
 static int32_t send_req(int fd, const std::vector<std::string> &cmd)
@@ -143,18 +244,14 @@ static int32_t read_res(int fd)
         }
         return err;
     }
-
-    // print the result
-    if (len < 4)
+    // get the SER code
+    int32_t rv = on_response((uint8_t *)&rbuf[4], len);
+    if (rv > 0 && (uint32_t)rv != len)
     {
-        msg("bad response");
-        return -1;
+        msg("bad response c");
+        rv = -1;
     }
-    // get the rescode
-    uint32_t rescode = 0;
-    memcpy(&rescode, &rbuf[4], 4);
-    printf("server says: [%u] %.*s\n", rescode, len - 4, &rbuf[8]);
-    return 0;
+    return rv;
 }
 
 int main(int argc, char **argv)
