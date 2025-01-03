@@ -57,9 +57,10 @@ static AVLNode *rot_left(AVLNode *node)
     node->right = new_node->left;
     // new_node's left child is current root node
     new_node->left = node;
-    node->parent = new_node;
     // give node's parent to new_node
     new_node->parent = node->parent;
+    node->parent = new_node;
+
     // but in this step, we have no idea node is the left/right child of its parent!!!
     //  only update these two nodes bc only their subtrees' structure has been changed
     avl_update(node);
