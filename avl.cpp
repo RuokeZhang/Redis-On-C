@@ -46,7 +46,7 @@ static void avl_update(AVLNode *node)
   3   5   1   3
 */
 static AVLNode *rot_left(AVLNode *node)
-{
+{ // a good example: https://adtinfo.org/libavl.html/Answers-for-Chapter-14.html#g_t14%2d2%231
     // its right child will become the new root
     AVLNode *new_node = node->right;
     // new_node's left child will become node's child
@@ -223,35 +223,4 @@ static AVLNode *avl_del(AVLNode *node)
             return victim;
         }
     }
-    /* if we want to delete 50. the victim is 55
-        50（node)
-       /  \
-     30    70
-    /  \   /  \
-  20   40 60  80
-         /
-        55
-         \
-          58
-
-        50（node)
-       /  \
-     30    70
-    /  \   /  \
-  20   40 60  80
-         /
-        58
-victim->55
-
-现在要进行*victim = *node;了
-        50(victim)
-       /  \
-     30    70
-    /  \   /  \
-  20   40 60  80
-         /
-        58
-node->55
-我想知道树的结构变了吗？因为node是有 left, right的，他们里面存着30 和 70 的地址值.是不是变成我画的这样了？
-    */
 }
