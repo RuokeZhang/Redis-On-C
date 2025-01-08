@@ -19,6 +19,8 @@
 #include <vector>
 #include <map>
 #include "hashtable.h"
+#include "zset.h"
+#include "common.h"
 
 #define PORT "3490" // the port users will be connecting to
 
@@ -68,6 +70,11 @@ enum
     ERR_UNKNOWN = 1,
     ERR_2BIG = 2,
 };
+enum
+{
+    T_STR = 0,
+    T_ZSET = 1,
+};
 
 static struct
 {
@@ -110,20 +117,53 @@ static void out_arr(std::string &out, uint32_t n)
     out.append((char *)&n, 4);
 }
 
+static bool str2dbl(const std::string &s, double &out)
+{
+    char *endp = NULL;
+    out = strtod(s.c_str(), &endp);
+    return endp == s.c_str() + s.size() && !isnan(out);
+}
+
+static bool str2int(const std::string &s, int64_t &out)
+{
+    char *endp = NULL;
+    out = strtoll(s.c_str(), &endp, 10);
+    return endp == s.c_str() + s.size();
+}
+
+enum
+{
+    T_STR = 0,  // string
+    T_ZSET = 1, // sorted set
+};
+
 struct Entry
 {
     struct HNode node;
     std::string key;
     std::string val;
+    uint32_t type = 0;
+    ZSet *zset = NULL;
 };
 
 static bool entry_eq(HNode *lhs, HNode *rhs)
 {
     struct Entry *le = my_container_of(lhs, Entry, node);
     struct Entry *re = my_container_of(rhs, Entry, node);
+    // compare two pointers, check if they point to the same object
     return le->key == re->key;
 }
-
+static void entry_del(Entry *ent)
+{
+    switch (ent->type)
+    {
+    case T_ZSET:
+        zset_dispose(ent->zset);
+        delete ent->zset;
+        break;
+    }
+    delete ent;
+}
 static uint64_t str_hash(const uint8_t *data, size_t len)
 {
     uint32_t h = 0x811C9DC5;
@@ -552,6 +592,100 @@ static void conn_put(std::vector<Conn *> &fd2conn, struct Conn *conn)
         fd2conn.resize(conn->fd + 1);
     }
     fd2conn[conn->fd] = conn;
+}
+
+// zadd zset score name
+static void do_zadd(std::vector<std::string> &cmd, std::string &out)
+{
+    double score = 0;
+    if (!str2dbl(cmd[2], score))
+    {
+        return out_err(out, ERR_ARG, "expect fp number");
+    }
+    // lookup or create the zset
+    Entry entry;
+    entry.key.swap(cmd[1]);
+    entry.node.hcode = str_hash((uint8_t *)entry.key.data(), entry.key.size());
+    HNode *hnode = hm_lookup(&g_data.db, &key.node, &entry_eq);
+    Entry *ent = NULL;
+    if (!hnode)
+    {
+        // if we don't have that zset
+        ent = new Entry();
+        ent->key.swap(entry.key);
+        ent->node.hcode = entry.node.hcode;
+        ent->type = T_ZSET;
+        ent->zset = new ZSet();
+        hm_insert(&g_data.db, &ent->node);
+    }
+    else
+    {
+        ent = container_of(hnode, Entry, node);
+        if (ent->type != T_ZSET)
+        {
+            return out_err(out, ERR_TYPE, "expect zset");
+        }
+    }
+    // add or update the tuple  to the zset
+    const std::string &name = cmd[3];
+    bool added = zset_add(ent->zset, name.data(), name.size(), score);
+    return out_int(out, (int64_t)added);
+}
+
+// return true if ent is of type ZSet and has name s
+static bool expect_zset(std::string &out, std::string &s, Entry **ent)
+{
+    Entry entry;
+    entry.key.swap(s);
+    entry.node.hcode = str_hash((uint8_t *)entry.key.data(), entry.key.size());
+    HNode *hnode = hm_lookup(&g_data.db, &key.node, &entry_eq);
+    if (!hnode)
+    {
+        out_nil(out);
+        return false;
+    }
+    *ent = my_container_of(hnode, Entry, node);
+    if ((*ent)->type != T_ZSET)
+    {
+        out_err(out, ERR_TYPE, "expect zset");
+        return false;
+    }
+    return true;
+}
+
+// zrem zset name
+// remove a tuple from the zset
+static void do_zrem(std::vector<std::string> &cmd, std::string &out)
+{
+    Entry *ent = NULL;
+    // get the set that has the name we specified
+    if (!expect_zset(out, cmd[1], &ent))
+    {
+        return;
+    }
+    // ZNode *zset_pop(ZSet *zset, const char *name, size_t len);
+    const std::string &name = cmd[1];
+    // pop the tuple from the set
+    ZNode *znode = zset_pop(ent->zset, name.data(), name.size());
+    if (znode)
+    {
+        znode_del(znode);
+    }
+    return out_int(out, znode ? 1 : 0);
+}
+
+// zscore zset name
+static void do_zscore(std::vector<std::string> &cmd, std::string &out)
+{
+    Entry *ent = NULL;
+    // get the set that has the name we specified
+    if (!expect_zset(out, cmd[1], &ent))
+    {
+        return;
+    }
+    const std::string &name = cmd[2];
+    ZNode *znode = zset_lookup(ent->zset, name.data(), name.size());
+    return znode ? out_dbl(out, znode->score) : out_nil(out);
 }
 
 // listening fd try to accept new client connections, then put those connections in fd2conn array
