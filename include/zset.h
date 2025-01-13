@@ -2,6 +2,7 @@
 
 #include "avl.h"
 #include "hashtable.h"
+#include <string>
 
 struct ZSet
 {
@@ -13,7 +14,7 @@ struct ZNode
 {
     AVLNode tree;
     HNode hmap;
-    double score = 0;
+    double score = 0.0;
     size_t len = 0;
     char name[0];
 };

@@ -7,23 +7,26 @@
 #include "common.h"
 #include "hashtable.h"
 
+// 计算成员偏移量
 template <class P, class M>
-size_t my_offsetof(const M P::*member)
+constexpr size_t my_offsetof(const M P::*member)
 {
-    return (size_t) & (reinterpret_cast<P *>(0)->*member);
+    return reinterpret_cast<size_t>(&(reinterpret_cast<P *>(0)->*member));
 }
 
+// 从成员指针获取父结构的地址
 template <class P, class M>
 P *my_container_of_impl(M *ptr, const M P::*member)
 {
-    return (P *)((char *)ptr - my_offsetof(member));
+    return reinterpret_cast<P *>(reinterpret_cast<char *>(ptr) - my_offsetof(member));
 }
 
+// 定义宏，便于使用
 #define my_container_of(ptr, type, member) \
     my_container_of_impl(ptr, &type::member)
 
-#include <type_traits>
-#define my_typeof(___zarg) std::remove_reference<decltype(___zarg)>::type
+// 类型推导宏
+#define my_typeof(___zarg) std::remove_reference_t<decltype(___zarg)>
 
 // a helper structure for the hashtable lookup
 struct HKey
@@ -81,39 +84,104 @@ ZNode *zset_lookup(ZSet *zset, const char *name, size_t len)
 static bool zless(
     AVLNode *lhs, double score, const char *name, size_t len)
 {
+    assert(lhs != NULL);  // 检查 lhs 是否为 NULL
+    assert(name != NULL); // 检查 name 是否为 NULL
+
     ZNode *zl = my_container_of(lhs, ZNode, tree);
+    assert(zl != NULL);       // 确保 my_container_of 返回合法地址
+    assert(zl->name != NULL); // 确保 zl->name 不为 NULL
+
+    printf("zless: Comparing score and name\n");
+    printf("zless: zl->score = %f, score = %f\n", zl->score, score);
+
+    // 比较分数
     if (zl->score != score)
     {
         return zl->score < score;
     }
-    int rv = memcmp(zl->name, name, min(zl->len, len));
+
+    // 比较名字
+    size_t cmp_len = min(zl->len, len);
+    printf("zless: zl->len = %zu, len = %zu, cmp_len = %zu\n", zl->len, len, cmp_len);
+
+    int rv = memcmp(zl->name, name, cmp_len);
     if (rv != 0)
     {
         return rv < 0;
     }
+
+    // 比较名字长度
     return zl->len < len;
 }
 
 static bool zless(AVLNode *lhs, AVLNode *rhs)
 {
+    assert(lhs != NULL); // 检查 lhs 是否为 NULL
+    assert(rhs != NULL); // 检查 rhs 是否为 NULL
+
     ZNode *zr = my_container_of(rhs, ZNode, tree);
+    assert(zr != NULL); // 确保 my_container_of 返回合法地址
+
     return zless(lhs, zr->score, zr->name, zr->len);
 }
 
 static void tree_add(ZSet *zset, ZNode *node)
 {
-    AVLNode *cur = NULL;          // current node
-    AVLNode **from = &zset->tree; // the incoming pointer to the next node
-    while (*from)
-    { // tree search
-        cur = *from;
-        from = zless(&node->tree, cur) ? &cur->left : &cur->right;
-    }
-    *from = &node->tree; // attach the new node
-    node->tree.parent = cur;
-    zset->tree = avl_fix(&node->tree);
-}
+    printf("tree_add: Start\n");
 
+    // 检查 zset 和 node 是否为 NULL
+    if (!zset)
+    {
+        printf("tree_add: zset is NULL\n");
+        return;
+    }
+    if (!node)
+    {
+        printf("tree_add: node is NULL\n");
+        return;
+    }
+
+    // 初始化 node->tree
+    printf("tree_add: Initializing node tree structure\n");
+    node->tree.parent = NULL;
+    node->tree.left = NULL;
+    node->tree.right = NULL;
+
+    AVLNode *cur = NULL;
+    AVLNode **from = &zset->tree; // 指向树的根节点
+    printf("tree_add: Starting tree search. Initial zset->tree = %p\n", zset->tree);
+
+    // 遍历树查找插入点
+    while (*from)
+    {
+        cur = *from;
+        printf("tree_add: Visiting node %p (left = %p, right = %p, parent = %p)\n",
+               cur, cur->left, cur->right, cur->parent);
+        // TODO: 这里 zless的my_container_of的实现有问题
+        //  检查 zless 返回值
+        if (zless(&node->tree, cur))
+        {
+            printf("tree_add: Moving left from node %p\n", cur);
+            from = &cur->left;
+        }
+        else
+        {
+            printf("tree_add: Moving right from node %p\n", cur);
+            from = &cur->right;
+        }
+    }
+
+    // 将新节点插入树中
+    printf("tree_add: Found insertion point. Attaching new node at %p\n", *from);
+    *from = &node->tree;
+    node->tree.parent = cur;
+
+    // 修复 AVL 树的平衡性
+    printf("tree_add: Fixing AVL tree balance\n");
+    zset->tree = avl_fix(&node->tree);
+
+    printf("tree_add: Finished successfully\n");
+}
 // update the score of an existing node (AVL tree reinsertion)
 static void zset_update(ZSet *zset, ZNode *node, double score)
 {
@@ -130,25 +198,28 @@ static void zset_update(ZSet *zset, ZNode *node, double score)
 // add a new (score, name) tuple, or update the score of the existing tuple
 bool zset_add(ZSet *zset, const char *name, size_t len, double score)
 {
-
+    printf("zset_add starts, we want to add a new tuple to the zset\n");
+    printf("score is %f\n", score);
     // check if ZSet already has this name
     ZNode *node = zset_lookup(zset, name, len);
 
     // if has, update its score
     if (node)
     {
-        printf("1");
+        printf("zset has this name, we want to update its score\n");
         zset_update(zset, node, score);
         return false;
     }
     else
     { // create a ZNode
-        printf("2");
+        printf("zset doesn't have that name\n");
         ZNode *node = znode_new(name, len, score);
         // add to the hashmap.
         hm_insert(&zset->hmap, &node->hmap);
+        printf("successfully insert the znode's hnode to zset's hmap\n");
         // add to the tree
         tree_add(zset, node);
+        printf("successfully insert the znode's avlnode to zset's avltree\n");
         return true;
     }
 }

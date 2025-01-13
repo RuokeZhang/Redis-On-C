@@ -375,10 +375,14 @@ static void do_del(const std::vector<std::string> &cmd, std::string &out)
 static void do_zadd(std::vector<std::string> &cmd, std::string &out)
 {
     double score = 0;
+    // TODO:发现这里好像没有生效
     if (!str2dbl(cmd[2], score))
     {
         return out_err(out, ERR_ARG, "expect fp number");
     }
+    // 打印 cmd[2] 和转换后的 score
+    printf("score should be set to %s\n", cmd[2].c_str());
+    printf("converted score: %f\n", score);
     // lookup or create the zset
     Entry entry;
     entry.key.swap(cmd[1]);
@@ -387,18 +391,18 @@ static void do_zadd(std::vector<std::string> &cmd, std::string &out)
     Entry *ent = NULL;
     if (!hnode)
     {
-        printf("s1\n");
+        printf("we don't have that zset\n");
         // if we don't have that zset
         ent = new Entry();
         ent->key.swap(entry.key);
         ent->node.hcode = entry.node.hcode;
         ent->type = T_ZSET;
         ent->zset = new ZSet();
+        printf("created a new entry, then insert its HNode to global data\n");
         hm_insert(&g_data.db, &ent->node);
     }
     else
     {
-        printf("s2\n");
         ent = my_container_of(hnode, Entry, node);
         if (ent->type != T_ZSET)
         {
