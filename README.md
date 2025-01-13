@@ -24,3 +24,6 @@ Offset the sublist and limit the result size.
 Rank query: The offset in the ZQUERY command.
 
 server: g_data里面放zset的名字。zset里面放ZNode（name和score）
+
+test failed:
+./client zadd zset 1 n1
