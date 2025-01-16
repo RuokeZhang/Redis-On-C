@@ -124,12 +124,12 @@ static int32_t on_response(const uint8_t *data, size_t size)
         {
             uint32_t n = 0;
             memcpy(&n, &data[1], 4);
-            printf("(arr)%d\n", n);
-            // parse every element in this array
+            printf("(arr) len=%d\n", n); // 修改此行
+            // 解析数组中的每个元素
             size_t arr_bytes = 1 + 4;
             for (uint32_t i = 0; i < n; i++)
             {
-                // get number of bytes parsed
+                // 获取解析的字节数
                 int32_t rv = on_response(&data[arr_bytes], size - arr_bytes);
                 if (rv < 0)
                 {
@@ -140,6 +140,7 @@ static int32_t on_response(const uint8_t *data, size_t size)
             printf("(arr) end\n");
             return (int32_t)arr_bytes;
         }
+
     default:
         msg("bad response from the server: do not recognize ser code");
         return -1;
@@ -207,10 +208,10 @@ static int32_t read_full(int fd, char *buf, size_t n)
 
 static int32_t read_res(int fd)
 {
-    // define the read buffer
+    // 定义读取缓冲区
     char rbuf[4 + k_max_msg + 1];
     errno = 0;
-    // read the length first
+    // 先读取长度
     int32_t err = read_full(fd, rbuf, 4);
     if (err)
     {
@@ -227,7 +228,7 @@ static int32_t read_res(int fd)
 
     uint32_t len = 0;
     memcpy(&len, rbuf, 4);
-    // if the message is too long
+    // 检查消息长度
     if (len > k_max_msg)
     {
         printf("%d\n", len);
@@ -235,7 +236,7 @@ static int32_t read_res(int fd)
         return -1;
     }
 
-    // read the content
+    // 读取内容
     err = read_full(fd, &rbuf[4], len);
     if (err)
     {
@@ -249,14 +250,16 @@ static int32_t read_res(int fd)
         }
         return err;
     }
-    // get the SER code
+    // 解析响应
     int32_t rv = on_response((uint8_t *)&rbuf[4], len);
     if (rv > 0 && (uint32_t)rv != len)
     {
         msg("bad response c");
-        rv = -1;
+        return -1;
     }
-    return rv;
+
+    // 成功解析
+    return 0;
 }
 
 int main(int argc, char **argv)

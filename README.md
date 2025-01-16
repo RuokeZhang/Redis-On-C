@@ -1,29 +1,64 @@
-a command: | nstr | len | str1 | len | str2 | ... | len | strn |
-The nstr is the number of strings and the len is the length of the following string. Both are 32-bit integers.
+# ZSet(Sorted Set)
 
-the response: | res | data... |
-a 32-bit status code and a response string 
+A ZSet structure is implemented using a AVLTree and a Hashmap.
 
-implementation:
-BST insertion using pointer
+    struct  ZNode{
 
+	AVLNode  tree; // index by (score, name)
+
+	HNode  hmap; // index by name
+
+	double  score  =  0;
+
+	size_t  len  =  0;
+
+	char  name[0]; // variable length};
+
+## Sorted Set Operations
+
+1. Insert a pair: `ZADD key score name`, return 1 if added successfully.
+	
+
+       ./client ZADD student 20 age 
+       (int)1
+	  It takes log time, as inserting a node into an AVL tree takes log time.
+
+2. Find a value by name: `ZSCORE key name`
+	
+
+        ./client zscore student age
+         (dbl) 20
+	It takes constant time. We create a HNode that has the hcode=hash(name), when we search it in ZSet's hmap, and we get an HNode. Then use container_of to get its ZNode, and output its value.
+
+	   
+
+   
+3. Remove a pair by name:   `ZREM key name`. Returns 1 if removed successfully.
+	
+
+        ./client zrem student age   
+	    (int)1
+	It takes log time since removing a node from AVL tree takes log time.
+
+4. Range query: `ZQUERY key score name offset limit`
+  
+
+        ./client zquery student 18 anna 0 3
+	    (arr) len=4
+	    (str) tom
+	    (dbl) 20.2
+	    (str) ben
+	    (dbl) 22.2
+	    (arr) end
+
+	The core implementation of this operation is to find the node that of the specified offset. It's realized by AVL tree traversal(each node has its rank), so it takes log time.
+  
+  
+
+## TODO
+1. the implementation of hashmap(auto-resizing)
 references:
-https://github.com/torvalds/linux/blob/master/lib/rbtree.c
+
+[Linux implementation of Red Black Tree](https://github.com/torvalds/linux/blob/master/lib/rbtree.c)
+
 https://adtinfo.org/libavl.html/Rebalancing-AVL-Trees.html
-
-Insert a pair: ZADD key score name
-
-Find and remove by name:
-
-ZREM key name
-ZSCORE key name
-Range query: ZQUERY key score name offset limit
-
-Iterate through the sublist where pair >= (score, name).
-Offset the sublist and limit the result size.
-Rank query: The offset in the ZQUERY command.
-
-server: g_data里面放zset的名字。zset里面放ZNode（name和score）
-
-test failed:
-./client zadd zset 1 n1

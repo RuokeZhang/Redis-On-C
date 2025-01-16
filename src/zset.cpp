@@ -7,27 +7,6 @@
 #include "common.h"
 #include "hashtable.h"
 
-// 计算成员偏移量
-template <class P, class M>
-constexpr size_t my_offsetof(const M P::*member)
-{
-    return reinterpret_cast<size_t>(&(reinterpret_cast<P *>(0)->*member));
-}
-
-// 从成员指针获取父结构的地址
-template <class P, class M>
-P *my_container_of_impl(M *ptr, const M P::*member)
-{
-    return reinterpret_cast<P *>(reinterpret_cast<char *>(ptr) - my_offsetof(member));
-}
-
-// 定义宏，便于使用
-#define my_container_of(ptr, type, member) \
-    my_container_of_impl(ptr, &type::member)
-
-// 类型推导宏
-#define my_typeof(___zarg) std::remove_reference_t<decltype(___zarg)>
-
 // a helper structure for the hashtable lookup
 struct HKey
 {
@@ -61,6 +40,7 @@ znode_new(const char *name, size_t len, double score)
     node->score = score;
     node->len = len;
     memcpy(node->name, name, len);
+    return node;
 }
 // lookup by name.
 ZNode *zset_lookup(ZSet *zset, const char *name, size_t len)
@@ -157,8 +137,6 @@ static void tree_add(ZSet *zset, ZNode *node)
         cur = *from;
         printf("tree_add: Visiting node %p (left = %p, right = %p, parent = %p)\n",
                cur, cur->left, cur->right, cur->parent);
-        // TODO: 这里 zless的my_container_of的实现有问题
-        //  检查 zless 返回值
         if (zless(&node->tree, cur))
         {
             printf("tree_add: Moving left from node %p\n", cur);
@@ -229,13 +207,14 @@ ZNode *zset_pop(ZSet *zset, const char *name, size_t len)
 {
     if (!zset->tree)
     {
+        printf("zset_pop: zset->tree is NULL\n");
         return NULL;
     }
     HKey key;
     key.node.hcode = str_hash((uint8_t *)name, len);
     key.name = name;
     key.len = len;
-    // search ths key in the zset's hmap, try to delete it
+    // search the key in the zset's hmap, try to delete it
     HNode *found = hm_pop(&zset->hmap, &key.node, &hcmp);
     if (!found)
     {
@@ -246,6 +225,7 @@ ZNode *zset_pop(ZSet *zset, const char *name, size_t len)
     ZNode *node = my_container_of(found, ZNode, hmap);
     // get the tree
     zset->tree = avl_del(&node->tree);
+    return node;
 }
 
 // find the (score, name) tuple that is greater or equal to the argument.

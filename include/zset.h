@@ -12,11 +12,11 @@ struct ZSet
 
 struct ZNode
 {
-    AVLNode tree;
-    HNode hmap;
-    double score = 0.0;
+    AVLNode tree; // index by (score, name)
+    HNode hmap;   // index by name
+    double score = 0;
     size_t len = 0;
-    char name[0];
+    char name[0]; // variable length
 };
 
 bool zset_add(ZSet *zset, const char *name, size_t len, double score);

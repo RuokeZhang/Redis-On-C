@@ -26,24 +26,6 @@
 
 #define BACKLOG 10 // how many pending connections queue will hold
 
-template <class P, class M>
-size_t my_offsetof(const M P::*member)
-{
-    return (size_t) & (reinterpret_cast<P *>(0)->*member);
-}
-
-template <class P, class M>
-P *my_container_of_impl(M *ptr, const M P::*member)
-{
-    return (P *)((char *)ptr - my_offsetof(member));
-}
-
-#define my_container_of(ptr, type, member) \
-    my_container_of_impl(ptr, &type::member)
-
-#include <type_traits>
-#define my_typeof(___zarg) std::remove_reference<decltype(___zarg)>::type
-
 static void msg(const char *msg)
 {
     perror(msg);
@@ -141,7 +123,7 @@ static bool str2int(const std::string &s, int64_t &out)
 struct Entry
 {
     struct HNode node;
-    std::string key;
+    std::string key; // name of the zset
     std::string val;
     uint32_t type = 0;
     ZSet *zset = NULL;
@@ -375,14 +357,11 @@ static void do_del(const std::vector<std::string> &cmd, std::string &out)
 static void do_zadd(std::vector<std::string> &cmd, std::string &out)
 {
     double score = 0;
-    // TODO:发现这里好像没有生效
     if (!str2dbl(cmd[2], score))
     {
         return out_err(out, ERR_ARG, "expect fp number");
     }
     // 打印 cmd[2] 和转换后的 score
-    printf("score should be set to %s\n", cmd[2].c_str());
-    printf("converted score: %f\n", score);
     // lookup or create the zset
     Entry entry;
     entry.key.swap(cmd[1]);
@@ -499,8 +478,7 @@ static void do_zrem(std::vector<std::string> &cmd, std::string &out)
     {
         return;
     }
-    // ZNode *zset_pop(ZSet *zset, const char *name, size_t len);
-    const std::string &name = cmd[1];
+    const std::string &name = cmd[2];
     // pop the tuple from the set
     ZNode *znode = zset_pop(ent->zset, name.data(), name.size());
     if (znode)

@@ -51,6 +51,7 @@
         "set": "cpp",
         "fstream": "cpp",
         "iomanip": "cpp",
-        "iostream": "cpp"
+        "iostream": "cpp",
+        "type_traits": "cpp"
     }
 }

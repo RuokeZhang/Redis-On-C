@@ -119,7 +119,6 @@ static AVLNode *avl_fix_right(AVLNode *root)
 // Unlike BST, we need to fix the imbalance from the inserted node, up to the root
 AVLNode *avl_fix(AVLNode *node)
 {
-    printf("avl_fix starts\n");
     while (true)
     {
         avl_update(node);
