@@ -55,10 +55,12 @@ A ZSet structure is implemented using a AVLTree and a Hashmap.
   
   
 
-## TODO
+## TO ADDED TO THIS README
 1. the implementation of hashmap(auto-resizing)
-references:
+2. data serialization
+3. avltree implementation
 
+references:
 [Linux implementation of Red Black Tree](https://github.com/torvalds/linux/blob/master/lib/rbtree.c)
 
 https://adtinfo.org/libavl.html/Rebalancing-AVL-Trees.html
