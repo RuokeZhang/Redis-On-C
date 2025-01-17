@@ -1,4 +1,0 @@
-/Users/ruoke/Documents/Socket/build/CMakeFiles/server.dir
-/Users/ruoke/Documents/Socket/build/CMakeFiles/client.dir
-/Users/ruoke/Documents/Socket/build/CMakeFiles/edit_cache.dir
-/Users/ruoke/Documents/Socket/build/CMakeFiles/rebuild_cache.dir
